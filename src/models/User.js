@@ -1,0 +1,33 @@
+import { DataTypes, Model } from 'sequelize';
+import sequelize from '../config/database.js';
+
+class User extends Model {}
+
+User.init({
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    email: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true,
+        validate: { isEmail: true }
+    },
+    password: {
+        type: DataTypes.STRING, // Recordar hashear esto con bcrypt
+        allowNull: false
+    },
+    role: {
+        type: DataTypes.ENUM('ADMIN', 'CLIENT', 'DRIVER'),
+        defaultValue: 'CLIENT'
+    },
+    firstName: { type: DataTypes.STRING },
+    lastName: { type: DataTypes.STRING }
+}, {
+    sequelize,
+    modelName: 'User'
+});
+
+export default User;
