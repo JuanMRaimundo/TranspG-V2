@@ -12,11 +12,7 @@ const io = new Server(httpServer, {
     }
 });
 
-// Inyectar io en la request de Express para usarlo en Controllers
-app.use((req, res, next) => {
-    req.io = io;
-    next();
-});
+app.set('io', io);
 
 // Inicializar lógica de Sockets
 io.on('connection', (socket) => {
