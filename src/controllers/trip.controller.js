@@ -1,196 +1,265 @@
-import Trip from '../models/Trip.js';
-import User from '../models/User.js';
+import Trip from "../models/Trip.js";
+import User from "../models/User.js";
+
+export const getAllTrips = async (req, res) => {
+	try {
+		const currentUser = req.user; // Viene del Token
+		let whereClause = {};
+
+		// --- FILTROS DE SEGURIDAD ---
+		if (currentUser.role === "CLIENT") {
+			// El cliente solo ve SUS propios viajes
+			whereClause.clientId = currentUser.id;
+		} else if (currentUser.role === "DRIVER") {
+			// El chofer solo ve los viajes que le asignaron
+			whereClause.driverId = currentUser.id;
+		}
+		// Si es ADMIN, 'whereClause' se queda vacío y ve TODO.
+
+		const trips = await Trip.findAll({
+			where: whereClause,
+			include: [
+				// Incluimos datos del cliente para mostrar nombre en lugar de solo ID
+				{
+					model: User,
+					as: "client",
+					attributes: ["firstName", "lastName", "email"],
+				},
+				// Incluimos datos del chofer si lo hay
+				{
+					model: User,
+					as: "driver",
+					attributes: ["firstName", "lastName"],
+				},
+			],
+			order: [["createdAt", "DESC"]], // Los más recientes primero
+		});
+
+		// Devolvemos el array directamente o dentro de un objeto data
+		return res.json({ success: true, data: trips });
+	} catch (error) {
+		console.error("Error al obtener viajes:", error);
+		return res.status(500).json({ success: false, error: error.message });
+	}
+};
 
 export const createTripRequest = async (req, res) => {
-    try {
-        const io = req.app.get('io');
-        const { 
-            origin, destination, pickupDate, 
-            cargoDetails, reference, containerNumber, 
-            expirationDate, notes,
-            targetClientId 
-        } = req.body;
-        
-        let finalClientId;
+	try {
+		const io = req.app.get("io");
+		const {
+			origin,
+			destination,
+			pickupDate,
+			cargoDetails,
+			reference,
+			containerNumber,
+			expirationDate,
+			notes,
+			targetClientId,
+		} = req.body;
 
-        // --- LÓGICA DE ASIGNACIÓN DE DUEÑO ---
-        if (req.user.role === 'ADMIN') {
-            // Si es Admin, DEBE decirnos de quién es el viaje
-            if (!targetClientId) {
-                return res.status(400).json({ 
-                    message: 'Como Admin, debes especificar el targetClientId (ID del Cliente dueño de la carga).' 
-                });
-            }
-            const targetUser = await User.findByPk(targetClientId);
-    
-        if (!targetUser) {
-             return res.status(404).json({ message: 'El cliente especificado no existe' });
-              }
-        finalClientId = targetClientId;
-        } else {
-            // Si es Cliente, el dueño es él mismo (Token)
-            finalClientId = req.user.id;
-        }
+		let finalClientId;
 
-        // Crear el viaje
-        const newTrip = await Trip.create({
-            origin,
-            destination,
-            pickupDate, 
-            cargoDetails,
-            reference,
-            containerNumber, 
-            expirationDate,
-            notes,
-            clientId: finalClientId, // Aquí usamos el ID decidido arriba
-            status: 'PENDING'
-        });
+		// --- LÓGICA DE ASIGNACIÓN DE DUEÑO ---
+		if (req.user.role === "ADMIN") {
+			// Si es Admin, DEBE decirnos de quién es el viaje
+			if (!targetClientId) {
+				return res.status(400).json({
+					message:
+						"Como Admin, debes especificar el targetClientId (ID del Cliente dueño de la carga).",
+				});
+			}
+			const targetUser = await User.findByPk(targetClientId);
 
-        // Notificar
-        if (io) {
-            io.to('role_admin').emit('new_trip_request', {
-                tripId: newTrip.id,
-                origin,
-                container: containerNumber,
-                // Si lo creó un Admin, mostramos "Creado por Admin para Cliente X"
-                creator: req.user.role === 'ADMIN' ? 'Admin' : 'Cliente' 
-            });
-        }
+			if (!targetUser) {
+				return res
+					.status(404)
+					.json({ message: "El cliente especificado no existe" });
+			}
+			finalClientId = targetClientId;
+		} else {
+			// Si es Cliente, el dueño es él mismo (Token)
+			finalClientId = req.user.id;
+		}
 
-        return res.status(201).json({ success: true, data: newTrip });
+		// Crear el viaje
+		const newTrip = await Trip.create({
+			origin,
+			destination,
+			pickupDate,
+			cargoDetails,
+			reference,
+			containerNumber,
+			expirationDate,
+			notes,
+			clientId: finalClientId, // Aquí usamos el ID decidido arriba
+			status: "PENDING",
+		});
 
-    } catch (error) {
-        console.error("ERROR:", error);
-        return res.status(500).json({ success: false, error: error.message });
-    }
+		// Notificar
+		if (io) {
+			io.to("role_admin").emit("new_trip_request", {
+				tripId: newTrip.id,
+				origin,
+				container: containerNumber,
+				// Si lo creó un Admin, mostramos "Creado por Admin para Cliente X"
+				creator: req.user.role === "ADMIN" ? "Admin" : "Cliente",
+			});
+		}
+
+		return res.status(201).json({ success: true, data: newTrip });
+	} catch (error) {
+		console.error("ERROR:", error);
+		return res.status(500).json({ success: false, error: error.message });
+	}
 };
 
 export const updateTripStatus = async (req, res) => {
-    try {
-        const io = req.app.get('io'); // Recuperamos socket
-        const { tripId } = req.params;
-        const { status } = req.body; // Ej: 'IN_PROGRESS', 'FINISHED'
-        const driverId = req.user.id; // El chofer que hace la petición
+	try {
+		const io = req.app.get("io"); // Recuperamos socket
+		const { tripId } = req.params;
+		const { status } = req.body; // Ej: 'IN_PROGRESS', 'FINISHED'
+		const driverId = req.user.id; // El chofer que hace la petición
 
-        const trip = await Trip.findByPk(tripId);
+		const trip = await Trip.findByPk(tripId);
 
-        if (!trip) return res.status(404).json({ message: 'Viaje no encontrado' });
+		if (!trip) return res.status(404).json({ message: "Viaje no encontrado" });
 
-        // Validación de seguridad: Solo el chofer asignado puede tocar este viaje
-        if (trip.driverId !== driverId) {
-            return res.status(403).json({ message: 'No tienes permiso para modificar este viaje' });
-        }
+		// Validación de seguridad: Solo el chofer asignado puede tocar este viaje
+		if (trip.driverId !== driverId) {
+			return res
+				.status(403)
+				.json({ message: "No tienes permiso para modificar este viaje" });
+		}
 
-        // 1. Actualizar DB
-        trip.status = status;
-        await trip.save();
+		// 1. Actualizar DB
+		trip.status = status;
+		await trip.save();
 
-        // 2. Notificar al Cliente (Real-Time)
-        // Le avisamos al pasajero: "Tu viaje ha finalizado" o "Tu chofer está en camino"
-        if (io) {
-            io.to(`user_${trip.clientId}`).emit('trip_status_update', {
-                tripId: trip.id,
-                status: status,
-                message: `El estado de tu viaje cambió a: ${status}`
-            });
-        }
+		// 2. Notificar al Cliente (Real-Time)
+		// Le avisamos al pasajero: "Tu viaje ha finalizado" o "Tu chofer está en camino"
+		if (io) {
+			io.to(`user_${trip.clientId}`).emit("trip_status_update", {
+				tripId: trip.id,
+				status: status,
+				message: `El estado de tu viaje cambió a: ${status}`,
+			});
+		}
 
-        return res.json({ success: true, data: trip });
-
-    } catch (error) {
-        console.error("ERROR EN UPDATE STATUS:", error);
-        return res.status(500).json({ success: false, error: error.message });
-    }
+		return res.json({ success: true, data: trip });
+	} catch (error) {
+		console.error("ERROR EN UPDATE STATUS:", error);
+		return res.status(500).json({ success: false, error: error.message });
+	}
 };
 
 export const assignDriver = async (req, res) => {
-    try {
-        const io = req.app.get('io');
-        const { tripId } = req.params;
-        const { driverId } = req.body; 
+	try {
+		const io = req.app.get("io");
+		const { tripId } = req.params;
+		const { driverId } = req.body;
 
-        // --- SEGURIDAD: SOLO ADMIN PUEDE ASIGNAR ---
-        if (req.user.role !== 'ADMIN') {
-            return res.status(403).json({ message: 'Acceso denegado. Solo Admins pueden asignar viajes.' });
-        }
-        // -------------------------------------------
+		// --- SEGURIDAD: SOLO ADMIN PUEDE ASIGNAR ---
+		if (req.user.role !== "ADMIN") {
+			return res.status(403).json({
+				message: "Acceso denegado. Solo Admins pueden asignar viajes.",
+			});
+		}
+		// -------------------------------------------
 
-        const trip = await Trip.findByPk(tripId);
-        if (!trip) return res.status(404).json({ message: 'Viaje no encontrado' });
+		const trip = await Trip.findByPk(tripId);
+		if (!trip) return res.status(404).json({ message: "Viaje no encontrado" });
 
-        // Validación extra: Verificar que el viaje esté en estado PENDING o REJECTED
-        // Para no reasignar un viaje que ya está en curso
-        if (trip.status !== 'PENDING' && trip.status !== 'REJECTED_BY_DRIVER') {
-             return res.status(400).json({ message: 'El viaje no está disponible para asignación' });
-        }
+		// Validación extra: Verificar que el viaje esté en estado PENDING o REJECTED
+		// Para no reasignar un viaje que ya está en curso
+		if (trip.status !== "PENDING" && trip.status !== "REJECTED_BY_DRIVER") {
+			return res
+				.status(400)
+				.json({ message: "El viaje no está disponible para asignación" });
+		}
 
-        // ... (El resto de tu código sigue igual)
-        trip.driverId = driverId;
-        trip.status = 'WAITING_DRIVER'; 
-        await trip.save();
+		// ... (El resto de tu código sigue igual)
+		trip.driverId = driverId;
+		trip.status = "WAITING_DRIVER";
+		await trip.save();
 
-        if (io) {
-            io.to(`user_${driverId}`).emit('trip_offer', {
-                tripId: trip.id,
-                origin: trip.origin,
-                destination: trip.destination,
-                cargo: trip.cargoDetails,
-                container: trip.containerNumber,
-                message: 'Tienes una nueva propuesta de viaje. ¿Aceptas?'
-            });
-        }
+		if (io) {
+			io.to(`user_${driverId}`).emit("trip_offer", {
+				tripId: trip.id,
+				origin: trip.origin,
+				destination: trip.destination,
+				cargo: trip.cargoDetails,
+				container: trip.containerNumber,
+				message: "Tienes una nueva propuesta de viaje. ¿Aceptas?",
+			});
+		}
 
-        return res.json({ success: true, message: 'Propuesta enviada al chofer', data: trip });
-
-    } catch (error) {
-        return res.status(500).json({ error: error.message });
-    }
+		return res.json({
+			success: true,
+			message: "Propuesta enviada al chofer",
+			data: trip,
+		});
+	} catch (error) {
+		return res.status(500).json({ error: error.message });
+	}
 };
 
 export const driverResponse = async (req, res) => {
-    try {
-        const io = req.app.get('io');
-        const { tripId } = req.params;
-        const { response } = req.body; // Esperamos 'ACCEPT' o 'REJECT'
-        const driverId = req.user.id;
+	try {
+		const io = req.app.get("io");
+		const { tripId } = req.params;
+		const { response } = req.body; // Esperamos 'ACCEPT' o 'REJECT'
+		const driverId = req.user.id;
 
-        const trip = await Trip.findByPk(tripId);
-        if (!trip) return res.status(404).json({ message: 'Viaje no encontrado' });
+		const trip = await Trip.findByPk(tripId);
+		if (!trip) return res.status(404).json({ message: "Viaje no encontrado" });
 
-        // Seguridad: Verificar que sea el chofer asignado
-        if (trip.driverId !== driverId) {
-            return res.status(403).json({ message: 'No eres el chofer asignado a este viaje' });
-        }
+		// Seguridad: Verificar que sea el chofer asignado
+		if (trip.driverId !== driverId) {
+			return res
+				.status(403)
+				.json({ message: "No eres el chofer asignado a este viaje" });
+		}
 
-        if (response === 'ACCEPT') {
-            trip.status = 'CONFIRMED';
-            await trip.save();
-            
-            // Avisar al Admin y al Cliente que el chofer aceptó
-            if(io) io.to(`user_${trip.clientId}`).emit('trip_status', { status: 'CONFIRMED', tripId });
+		if (response === "ACCEPT") {
+			trip.status = "CONFIRMED";
+			await trip.save();
 
-            return res.json({ success: true, message: 'Viaje confirmado exitosamente' });
+			// Avisar al Admin y al Cliente que el chofer aceptó
+			if (io)
+				io.to(`user_${trip.clientId}`).emit("trip_status", {
+					status: "CONFIRMED",
+					tripId,
+				});
 
-        } else if (response === 'REJECT') {
-            // Si rechaza, devolvemos el viaje al estado PENDING y quitamos al chofer
-            // para que el Admin pueda asignarlo a otro.
-            trip.status = 'PENDING';
-            trip.driverId = null; 
-            await trip.save();
+			return res.json({
+				success: true,
+				message: "Viaje confirmado exitosamente",
+			});
+		} else if (response === "REJECT") {
+			// Si rechaza, devolvemos el viaje al estado PENDING y quitamos al chofer
+			// para que el Admin pueda asignarlo a otro.
+			trip.status = "PENDING";
+			trip.driverId = null;
+			await trip.save();
 
-            // Avisar al Admin que el chofer rechazó (¡Alerta!)
-            if(io) io.to('role_admin').emit('driver_rejected', { 
-                tripId, 
-                message: `El chofer rechazó el viaje ${trip.reference}` 
-            });
+			// Avisar al Admin que el chofer rechazó (¡Alerta!)
+			if (io)
+				io.to("role_admin").emit("driver_rejected", {
+					tripId,
+					message: `El chofer rechazó el viaje ${trip.reference}`,
+				});
 
-            return res.json({ success: true, message: 'Viaje rechazado. Vuelve a lista de pendientes.' });
-        }
+			return res.json({
+				success: true,
+				message: "Viaje rechazado. Vuelve a lista de pendientes.",
+			});
+		}
 
-        return res.status(400).json({ message: 'Respuesta inválida (Use ACCEPT o REJECT)' });
-
-    } catch (error) {
-        return res.status(500).json({ error: error.message });
-    }
+		return res
+			.status(400)
+			.json({ message: "Respuesta inválida (Use ACCEPT o REJECT)" });
+	} catch (error) {
+		return res.status(500).json({ error: error.message });
+	}
 };
-
