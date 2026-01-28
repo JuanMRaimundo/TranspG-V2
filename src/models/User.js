@@ -39,6 +39,8 @@ User.init(
 		lastName: { type: DataTypes.STRING },
 	},
 	{
+		timestamps: true,
+		paranoid: true,
 		sequelize,
 		modelName: "User",
 	},
