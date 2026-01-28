@@ -3,9 +3,13 @@ import passport from "passport";
 import {
 	createTripRequest,
 	assignDriver,
-	updateTripStatus,
 	driverResponse,
 	getAllTrips,
+	getSortedTrips,
+	finishTrip,
+	getTripById,
+	updateTrip,
+	cancelTrip,
 } from "../../controllers/trip.controller.js";
 
 const router = Router();
@@ -18,6 +22,16 @@ router.get(
 	passport.authenticate("jwt", { session: false }),
 	getAllTrips,
 );
+router.get(
+	"/",
+	passport.authenticate("jwt", { session: false }),
+	getSortedTrips,
+);
+router.get(
+	"/:tripId",
+	passport.authenticate("jwt", { session: false }),
+	getTripById,
+);
 
 // POST /api/v1/trips/request -> Crear solicitud
 router.post(
@@ -25,27 +39,36 @@ router.post(
 	passport.authenticate("jwt", { session: false }),
 	createTripRequest,
 );
-
-// --- 2. Rutas Dinámicas (Después) ---
-// PUT /api/v1/trips/:tripId/assign -> Admin asigna chofer (Propuesta)
-router.put(
-	"/:tripId/assign",
+(router.put(
+	"/:tripId",
 	passport.authenticate("jwt", { session: false }),
-	assignDriver,
-);
+	updateTrip,
+),
+	// --- 2. Rutas Dinámicas (Después) ---
+	// PUT /api/v1/trips/:tripId/assign -> Admin asigna chofer (Propuesta)
+	router.put(
+		"/:tripId/assign",
+		passport.authenticate("jwt", { session: false }),
+		assignDriver,
+	));
 
 // POST /api/v1/trips/:tripId/response -> Chofer responde (Acepta/Rechaza)
-router.post(
-	"/:tripId/response",
+router.patch(
+	"/:tripId/responseDriver",
 	passport.authenticate("jwt", { session: false }),
 	driverResponse,
 );
 
 // PUT /api/v1/trips/:tripId/status -> Chofer actualiza estado (En curso, Finalizado)
-router.put(
-	"/:tripId/status",
+router.post(
+	"/:tripId/finish",
 	passport.authenticate("jwt", { session: false }),
-	updateTripStatus,
+	finishTrip,
+);
+router.patch(
+	"/:tripId/cancel",
+	passport.authenticate("jwt", { session: false }),
+	cancelTrip,
 );
 
 export default router;

@@ -1,6 +1,17 @@
 import User from "../models/User.js";
 import bcrypt from "bcrypt";
 
+export const getUserByID = async (req, res) => {
+	try {
+		const { id } = req.params;
+		const user = await User.findByPk(id, {
+			attributes: { exclude: ["password"] },
+		});
+		res.json({ succes: true, data: user });
+	} catch (error) {
+		res.status(400).json({ success: false, error: error.message });
+	}
+};
 export const getDrivers = async (req, res) => {
 	try {
 		const drivers = await User.findAll({
@@ -131,28 +142,22 @@ export const createDriver = async (req, res) => {
 		res.status(500).json({ success: false, error: error.message });
 	}
 };
-export const updateDriver = async (req, res) => {
+export const updateUser = async (req, res) => {
 	try {
 		const { id } = req.params;
-		const { firstName, lastName, email, password, phone } = req.body;
+		const { firstName, lastName, email, phone } = req.body;
 
-		const existingUser = await User.findOne({ where: { email } });
-		if (existingUser) {
-			return res
-				.status(400)
-				.json({ message: "El chofer con este email ya está registrado" });
-		}
-		const driver = await User.findOne({
-			where: { id, role: "DRIVER" },
+		const user = await User.findOne({
+			where: { id },
 			attributes: { exclude: ["password"] },
 		});
-		if (!driver) {
+		if (!user) {
 			return res.status(404).json({
 				success: false,
-				message: "Chofer no encontrado",
+				message: "Usuario no encontrado",
 			});
 		}
-		if (email && email !== driver.email) {
+		if (email && email !== user.email) {
 			const existingUser = await User.findOne({ where: { email } });
 			if (existingUser) {
 				return res.status(400).json({
@@ -174,18 +179,18 @@ export const updateDriver = async (req, res) => {
 		if (updatedRows === 0) {
 			return res.status(400).json({
 				success: false,
-				message: "No se pudo actualizar el chofer",
+				message: "No se pudo actualizar el usuario",
 			});
 		}
 
-		const updatedDriver = await User.findByPk(id, {
+		const updatedUser = await User.findByPk(id, {
 			attributes: { exclude: ["password"] },
 		});
 
 		res.status(200).json({
 			success: true,
-			message: "Chofer editado exitosamente",
-			driver: updatedDriver,
+			message: "Usuario editado exitosamente",
+			user: updatedUser,
 		});
 	} catch (error) {
 		if (error.name === "SequelizeValidationError") {
@@ -207,3 +212,80 @@ export const updateDriver = async (req, res) => {
 		});
 	}
 };
+export const deleteUser = async (req, res) => {
+	try {
+		const { id } = req.params;
+		const user = await User.findByPk(id);
+
+		if (!user) {
+			return res
+				.status(404)
+				.json({ success: false, message: "Usuario no encontrado" });
+		}
+
+		// Al tener { paranoid: true } en el modelo, .destroy() hace un Soft Delete
+		await user.destroy();
+
+		res.status(200).json({
+			success: true,
+			message: "Usuario eliminado correctamente (Soft Delete)",
+		});
+	} catch (error) {
+		res
+			.status(500)
+			.json({ success: false, message: "Error al eliminar usuario" });
+	}
+};
+
+//// --- UPDATE USER (Optimizado) ---
+/* export const updateUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { firstName, lastName, email, phone } = req.body;
+
+        // 1. Buscamos la instancia primero (Incluso los eliminados si quisieras restaurar, pero por ahora solo activos)
+        const user = await User.findByPk(id, {
+            attributes: { exclude: ['password'] }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: "Usuario no encontrado" });
+        }
+
+        // 2. Validación de Email único (Solo si el email cambió)
+        if (email && email !== user.email) {
+            const emailExists = await User.findOne({ where: { email } });
+            if (emailExists) {
+                return res.status(409).json({ success: false, message: "El email ya está en uso." });
+            }
+        }
+
+        // 3. Validación básica de teléfono (Regex simple)
+        const phoneRegex = /^\+?[1-9]\d{1,14}$/;
+        if (phone && !phoneRegex.test(phone)) {
+            return res.status(400).json({ success: false, message: "Formato de teléfono inválido." });
+        }
+
+        // 4. Actualización sobre la instancia
+        // Esto dispara automáticamente los hooks 'beforeUpdate' si los tuvieras
+        // y actualiza los campos updated_at
+        await user.update({ 
+            firstName, 
+            lastName, 
+            email, 
+            phone 
+        });
+
+        // 5. Respuesta
+        res.status(200).json({
+            success: true,
+            message: "Usuario actualizado correctamente",
+            data: user // 'user' ya tiene los datos nuevos tras el .update()
+        });
+
+    } catch (error) {
+        console.error("Error updating user:", error);
+        res.status(500).json({ success: false, message: "Error interno del servidor" });
+    }
+};
+ */
