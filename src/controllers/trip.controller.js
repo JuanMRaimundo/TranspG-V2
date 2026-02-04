@@ -1,11 +1,67 @@
 import Trip from "../models/Trip.js";
 import User from "../models/User.js";
+import TripHistory from "../models/TripHistory.js"; // Importamos el historial
+import ExcelJS from "exceljs";
+import { Op } from "sequelize";
+
+//HELPER DE AUDITORÍA
+const detectChanges = (oldData, newData) => {
+	const fieldsToCheck = [
+		"origin",
+		"destination",
+		"pickupDate",
+		"cargoDetails",
+		"semi",
+		"containerNumber",
+		"returnPlace",
+		"expirationDate",
+		"reference",
+		"notes",
+		"targetClientId", //
+	];
+	let changesLog = [];
+	let changesStructured = [];
+
+	fieldsToCheck.forEach((field) => {
+		// Si el campo viene en el body Y es diferente al que estaba en BD
+		if (newData[field] !== undefined && newData[field] != oldData[field]) {
+			// Manejo especial para fechas o nulos para que no sea spam
+			const oldVal = oldData[field] === null ? null : oldData[field];
+			const newVal = newData[field] === null ? null : newData[field];
+			changesLog.push(`${field}: ${oldVal || "N/A"} -> ${newVal || "N/A"}`);
+			changesStructured.push({
+				field: field,
+				oldValue: oldVal,
+				newValue: newVal,
+			});
+		}
+	});
+	return { changesLog, changesStructured };
+};
 
 export const getTripById = async (req, res) => {
 	try {
 		const { tripId } = req.params;
-		const trip = await Trip.findByPk(tripId);
-		res.json({ succes: true, data: trip });
+		const trip = await Trip.findByPk(tripId, {
+			include: [
+				{ model: User, as: "client" },
+				{ model: User, as: "driver" },
+				// INCLUIMOS EL HISTORIAL DE CAMBIOS
+				{
+					model: TripHistory,
+					as: "history",
+					include: [
+						{
+							model: User,
+							as: "editor",
+							attributes: ["firstName", "lastName"],
+						},
+					],
+				},
+			],
+		});
+		if (!trip) return res.status(404).json({ message: "No existe" });
+		res.json({ success: true, data: trip });
 	} catch (error) {
 		res.status(400).json({ success: false, error: error.message });
 	}
@@ -108,11 +164,18 @@ export const createTripRequest = async (req, res) => {
 			pickupDate,
 			cargoDetails,
 			reference,
+			notes,
+			semi,
 			containerNumber,
 			expirationDate,
-			notes,
+			returnPlace,
 			targetClientId,
 		} = req.body;
+
+		if (!semi)
+			return res
+				.status(400)
+				.json({ message: "El campo 'Semi' es obligatorio." });
 
 		let finalClientId;
 
@@ -145,9 +208,12 @@ export const createTripRequest = async (req, res) => {
 			pickupDate,
 			cargoDetails,
 			reference,
-			containerNumber,
-			expirationDate,
 			notes,
+			//NUEVOS CAMPOS - CON LÓGICA DEL CONTEINER
+			semi,
+			containerNumber: containerNumber || null,
+			expirationDate: containerNumber ? expirationDate : null,
+			returnPlace: containerNumber ? returnPlace : null,
 			clientId: finalClientId, // Aquí usamos el ID decidido arriba
 			status: "PENDING",
 		});
@@ -157,7 +223,7 @@ export const createTripRequest = async (req, res) => {
 			io.to("role_admin").emit("new_trip_request", {
 				tripId: newTrip.id,
 				origin,
-				container: containerNumber,
+				reference,
 				// Si lo creó un Admin, mostramos "Creado por Admin para Cliente X"
 				creator: req.user.role === "ADMIN" ? "Admin" : "Cliente",
 				creatorId: req.user.firstName,
@@ -184,65 +250,50 @@ export const updateTrip = async (req, res) => {
 	try {
 		const io = req.app.get("io");
 		const { tripId } = req.params;
-		const {
-			origin,
-			destination,
-			pickupDate,
-			cargoDetails,
-			reference,
-			containerNumber,
-			expirationDate,
-			notes,
-			targetClientId,
-		} = req.body;
+		const editorId = req.user.id;
+
 		const trip = await Trip.findByPk(tripId);
-		if (!trip) {
-			return res.status(404).json({
-				success: false,
-				message: "Viaje no encontrado",
+		if (!trip) return res.status(404).json({ message: "Viaje no encontrado" });
+
+		const { changesLog, changesStructured } = detectChanges(
+			trip.dataValues,
+			req.body,
+		);
+		if (changesStructured.length > 0) {
+			// 2. Si hay cambios, creamos el historial
+			await TripHistory.create({
+				tripId: trip.id,
+				editorId: editorId,
+				action: "UPDATE", // Acción de edición de contenido
+				details: `Campos modificados: ${changesLog.join(", ")}`,
+				changedFields: changesStructured,
+			});
+
+			// 3. Actualizamos el viaje
+			await trip.update(req.body);
+			// --- NOTIFICACIÓN A TODOS (Regla: "Sin importar el rol") ---
+			if (io) {
+				const msg = {
+					message: `El viaje ha sido editado.`,
+					tripId: trip.id,
+				};
+				io.to("role_admin").emit("trip_edited", msg);
+				if (trip.clientId)
+					io.to(`user_${trip.clientId}`).emit("trip_edited", msg);
+				if (trip.driverId)
+					io.to(`user_${trip.driverId}`).emit("trip_edited", msg);
+			}
+			res.json({
+				success: true,
+				message: "Viaje actualizado y registrado en historial.",
+				data: trip,
+			});
+		} else {
+			res.json({
+				success: true,
+				message: "No se detectaron cambios para guardar.",
 			});
 		}
-		const updateData = {
-			origin,
-			destination,
-			pickupDate,
-			cargoDetails,
-			reference,
-			containerNumber,
-			expirationDate,
-			notes,
-			targetClientId,
-		};
-		const [updatedRows] = await Trip.update(updateData, {
-			where: { id: tripId },
-			individualHooks: true, // para evitar confusiones y posibles engaños.
-		});
-		if (updatedRows === 0) {
-			return res.status(400).json({
-				success: false,
-				message: "No se pudo actualizar el viaje o no hubo cambios",
-			});
-		}
-
-		// --- NOTIFICACIÓN POR SALAS (Tu arquitectura) ---
-
-		// 1. Avisar al Cliente (Si existe)
-		if (trip.clientId && io) {
-			io.to(`user_${trip.clientId}`).emit("trip_updated", {
-				message: "Tu viaje ha sido modificado",
-				trip,
-			});
-		}
-
-		// 2. Avisar al Chofer (Si ya tiene uno asignado)
-		if (trip.driverId && io) {
-			io.to(`user_${trip.driverId}`).emit("trip_updated", {
-				message: "Los detalles del viaje han cambiado",
-				trip,
-			});
-		}
-
-		res.status(200).json({ success: true, message: "Viaje editado", trip });
 	} catch (error) {
 		if (error.name === "SequelizeValidationError") {
 			const errors = error.errors.map((err) => err.message);
@@ -271,14 +322,13 @@ export const assignDriver = async (req, res) => {
 				message: "Acceso denegado. Solo Admins pueden asignar viajes.",
 			});
 		}
-		// -------------------------------------------
 
 		const trip = await Trip.findByPk(tripId);
 		if (!trip) return res.status(404).json({ message: "Viaje no encontrado" });
 
-		// Validación extra: Verificar que el viaje esté en estado PENDING o REJECTED
+		// Validación extra: Verificar que el viaje esté en estado PENDING
 		// Para no reasignar un viaje que ya está en curso
-		if (trip.status !== "PENDING" && trip.status !== "REJECTED_BY_DRIVER") {
+		if (trip.status !== "PENDING") {
 			return res
 				.status(400)
 				.json({ message: "El viaje no está disponible para asignación" });
@@ -286,7 +336,8 @@ export const assignDriver = async (req, res) => {
 
 		// ... (El resto de tu código sigue igual)
 		trip.driverId = driverId;
-		trip.status = "WAITING_DRIVER";
+		trip.status = "CONFIRMED";
+		trip.driverAcknowledged = false;
 		await trip.save();
 
 		if (io) {
@@ -294,139 +345,182 @@ export const assignDriver = async (req, res) => {
 				tripId: trip.id,
 				origin: trip.origin,
 				destination: trip.destination,
-				cargo: trip.cargoDetails,
-				container: trip.containerNumber,
-				message: "Tienes una nueva propuesta de viaje. ¿Aceptas?",
+				message:
+					"Se te ha asignado un nuevo viaje. Por favor confirma lectura.",
 			});
 		}
 
 		return res.json({
 			success: true,
-			message: "Propuesta enviada al chofer",
+			message: "Chofer asignado",
 			data: trip,
 		});
 	} catch (error) {
 		return res.status(500).json({ error: error.message });
 	}
 };
-
-export const driverResponse = async (req, res) => {
+//CHOFER CONFIRMA LECTURA ("OK") -> No cambia Status, solo es un flag
+export const acknowledgeTrip = async (req, res) => {
 	try {
 		const io = req.app.get("io");
 		const { tripId } = req.params;
-		const { responseDriver } = req.body; // Esperamos 'ACCEPT' o 'REJECT'
-		const driverId = req.user.id;
-
-		const trip = await Trip.findByPk(tripId);
-		if (!trip) return res.status(404).json({ message: "Viaje no encontrado" });
-
-		// Seguridad: Verificar que sea el chofer asignado
-		if (trip.driverId !== driverId) {
-			return res
-				.status(403)
-				.json({ message: "No eres el chofer asignado a este viaje" });
-		}
-
-		if (responseDriver === "ACCEPT") {
-			trip.status = "CONFIRMED";
-			await trip.save();
-
-			// Avisar al Admin y al Cliente que el chofer aceptó
-			if (io)
-				io.to(`user_${trip.clientId}`).emit("trip_status", {
-					status: "CONFIRMED",
-					tripId,
-					reference: trip.reference,
-					message: `El chofer ha ACEPTADO tu viaje (Ref: ${trip.reference})`,
-				});
-
-			return res.json({
-				success: true,
-				message: "Viaje confirmado exitosamente",
-			});
-		} else if (responseDriver === "REJECT") {
-			// Si rechaza, devolvemos el viaje al estado PENDING y quitamos al chofer
-			// para que el Admin pueda asignarlo a otro.
-			trip.status = "PENDING";
-			trip.driverId = null;
-			await trip.save();
-
-			// Avisar al Admin que el chofer rechazó (¡Alerta!)
-			if (io)
-				io.to("role_admin").emit("driver_rejected", {
-					tripId,
-					reference: trip.reference,
-					message: `El chofer rechazó el viaje ${trip.reference}`,
-				});
-
-			return res.json({
-				success: true,
-				message: "Viaje rechazado. Vuelve a lista de pendientes.",
-			});
-		}
-
-		return res
-			.status(400)
-			.json({ message: "Respuesta inválida (Use ACCEPT o REJECT)" });
-	} catch (error) {
-		return res.status(500).json({ error: error.message });
-	}
-};
-export const finishTrip = async (req, res) => {
-	try {
-		const io = req.app.get("io"); // 1. Recuperamos Socket.io
-		const { tripId } = req.params;
-		const driverId = req.user.id;
-
 		const trip = await Trip.findByPk(tripId);
 
-		if (!trip) return res.status(404).json({ message: "Viaje no encontrado" });
+		if (trip.driverId !== req.user.id)
+			return res.status(403).json({ message: "No eres el chofer" });
 
-		// Seguridad: Solo el chofer asignado
-		if (trip.driverId !== driverId) {
-			return res
-				.status(403)
-				.json({ message: "No eres el chofer de este viaje" });
-		}
-
-		// Validación de estado lógico
-		if (trip.status === "FINISHED") {
-			return res.status(400).json({ message: "El viaje ya estaba finalizado" });
-		}
-
-		// 2. Actualizamos la DB
-		trip.status = "FINISHED";
-		// trip.endTime = new Date(); // Recomendado agregar esto en tu modelo
+		trip.driverAcknowledged = true;
 		await trip.save();
 
-		// 3. Notificación Real-Time (La magia del IO) ✨
-		if (io) {
-			// Avisamos al Cliente
-			io.to(`user_${trip.clientId}`).emit("trip_status", {
-				tripId: trip.id,
-				status: "FINISHED",
-				message: `¡Tu viaje ha finalizado! El chofer marcó la entrega.`,
+		if (io)
+			//  Admin
+			io.to("role_admin").emit("trip_ack", {
+				tripId,
+				driverName: req.user.firstName,
 			});
-
-			// Avisamos al Admin (opcional, pero útil)
-			io.to("role_admin").emit("trip_update", {
-				tripId: trip.id,
-				status: "FINISHED",
-				driverId,
-			});
-		}
-		// trip.endTime = new Date(); // Si tuvieras este campo AGREGAR ESTE CAMPOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
-		res.json({
-			success: true,
-			message: "Viaje finalizado correctamente",
-			data: trip,
+		//  Cliente
+		io.to(`user_${trip.clientId}`).emit("trip_status", {
+			status: "CONFIRMED", // Mantenemos el estado visual
+			message: `El chofer ${req.user.firstName} ha confirmado la recepción del viaje.`,
+			tripId,
 		});
-		// VER DE  DISPARAR NOTIFICACIÓN AL CLIENTE CON LA OPCION DE COMENTARIO (Socket/Email)
+
+		res.json({ success: true, message: "Lectura confirmada" });
 	} catch (error) {
-		console.error("Error finishing trip:", error);
-		res.status(500).json({ message: "Error al finalizar el viaje" });
+		res.status(500).json({ error: error.message });
 	}
 };
+//CHOFER INICIA VIAJE -> Status: IN_PROGRESS
+export const startTrip = async (req, res) => {
+	try {
+		const io = req.app.get("io");
+		const { tripId } = req.params;
+		const trip = await Trip.findByPk(tripId);
+
+		trip.status = "IN_PROGRESS";
+		await trip.save();
+
+		// Notificar a TODOS (Admin y Cliente)
+		const msg = {
+			status: "IN_PROGRESS",
+			message: `El viaje hacia ${trip.destination} ha comenzado.`,
+			tripId,
+		};
+		if (io) {
+			io.to(`user_${trip.clientId}`).emit("trip_status", msg);
+			io.to("role_admin").emit("trip_status_update", msg);
+		}
+		res.json({ success: true, status: "IN_PROGRESS" });
+	} catch (error) {
+		res.status(500).json({ error: error.message });
+	}
+};
+//  CHOFER LLEGA A DESTINO (DESCARGADO) -> Status: UNLOADED
+export const unloadTrip = async (req, res) => {
+	try {
+		const io = req.app.get("io");
+		const { tripId } = req.params;
+		const trip = await Trip.findByPk(tripId);
+
+		trip.status = "UNLOADED";
+		await trip.save();
+
+		const msg = {
+			status: "UNLOADED",
+			message: `La carga ha sido descargada en destino.`,
+			tripId,
+		};
+		if (io) {
+			io.to(`user_${trip.clientId}`).emit("trip_status", msg);
+			io.to("role_admin").emit("trip_status_update", msg);
+		}
+		res.json({ success: true, status: "UNLOADED" });
+	} catch (error) {
+		res.status(500).json({ error: error.message });
+	}
+};
+// E. CHOFER DEVUELVE CONTAINER (PLAYO) -> Status: RETURNED
+export const returnContainer = async (req, res) => {
+	try {
+		const io = req.app.get("io");
+		const { tripId } = req.params;
+		const trip = await Trip.findByPk(tripId);
+
+		if (!trip.containerNumber)
+			return res
+				.status(400)
+				.json({ message: "Este viaje no tiene contenedor." });
+
+		trip.status = "RETURNED";
+		await trip.save();
+
+		const msg = {
+			status: "RETURNED",
+			message: `Contenedor devuelto (Playo). Esperando facturación.`,
+			tripId,
+		};
+		if (io) {
+			io.to(`user_${trip.clientId}`).emit("trip_status", msg);
+			io.to("role_admin").emit("trip_status_update", msg);
+		}
+		res.json({ success: true, status: "RETURNED" });
+	} catch (error) {
+		res.status(500).json({ error: error.message });
+	}
+};
+
+// F. ADMIN CARGA MONTO (FACTURADO) -> Status: INVOICED
+export const invoiceTrip = async (req, res) => {
+	try {
+		const io = req.app.get("io");
+		const { tripId } = req.params;
+		const { amount } = req.body;
+
+		if (req.user.role !== "ADMIN")
+			return res.status(403).json({ message: "Solo Admin factura." });
+		if (!amount)
+			return res.status(400).json({ message: "El monto es obligatorio." });
+
+		const trip = await Trip.findByPk(tripId);
+
+		// Validación lógica: ¿Está listo para facturar?
+		// Si tenía container, debe estar RETURNED. Si no, debe estar UNLOADED.
+		const canInvoice =
+			(trip.containerNumber && trip.status === "RETURNED") ||
+			(!trip.containerNumber && trip.status === "UNLOADED");
+
+		if (
+			!canInvoice &&
+			trip.status !== "UNLOADED" &&
+			trip.status !== "RETURNED"
+		) {
+			// Nota: Somos flexibles si el admin quiere forzarlo, pero idealmente avisamos.
+			// Por ahora lo dejamos pasar, pero guardamos el monto.
+		}
+
+		trip.amount = amount;
+		trip.status = "INVOICED";
+		await trip.save();
+
+		if (io) {
+			io.to("role_admin").emit("trip_status", {
+				status: "INVOICED",
+				message: `El siguiente viaje ha sido cerrado y facturado.`,
+				tripId,
+			});
+			//VER SI LE MANDAMOS LA NOTIFICACIÓN DE "FACTURADO" AL CLIENTE O NO....
+			/* io.to(`user_${trip.clientId}`).emit("trip_status", {
+				status: "INVOICED",
+				message: `Tu viaje ha sido cerrado y facturado.`,
+				tripId,
+			}); */
+		}
+		res.json({ success: true, message: "Viaje facturado correctamente." });
+	} catch (error) {
+		res.status(500).json({ error: error.message });
+	}
+};
+
 export const cancelTrip = async (req, res) => {
 	try {
 		const io = req.app.get("io");
@@ -478,5 +572,93 @@ export const cancelTrip = async (req, res) => {
 			message: "Error interno al cancelar el viaje",
 			error: error.message,
 		});
+	}
+};
+
+// 4. EXPORTACIÓN EXCEL
+// ==========================================
+
+export const exportTripsToExcel = async (req, res) => {
+	try {
+		// Obtenemos filtros del query (ej: ?status=PENDING&startDate=2023-01-01)
+		const { status, startDate, endDate } = req.query;
+		let where = {};
+
+		if (status) where.status = status;
+		if (startDate && endDate) {
+			where.createdAt = {
+				[Op.between]: [new Date(startDate), new Date(endDate)],
+			};
+		}
+
+		// Buscamos TODOS los viajes que coincidan
+		const trips = await Trip.findAll({
+			where,
+			include: ["client", "driver"],
+			order: [["createdAt", "DESC"]],
+		});
+
+		// Creamos el libro de Excel
+		const workbook = new ExcelJS.Workbook();
+		const sheet = workbook.addWorksheet("Viajes");
+
+		// Definimos columnas
+		sheet.columns = [
+			{ header: "ID", key: "id", width: 10 },
+			{ header: "Fecha", key: "date", width: 15 },
+			{ header: "Estado", key: "status", width: 15 },
+			{ header: "Cliente", key: "client", width: 20 },
+			{ header: "Chofer", key: "driver", width: 20 },
+			{ header: "Semi", key: "semi", width: 15 },
+			{ header: "Origen", key: "origin", width: 25 },
+			{ header: "Destino", key: "destination", width: 25 },
+			{ header: "Contenedor", key: "container", width: 15 },
+			{ header: "Vencimiento", key: "expiration", width: 15 },
+			{ header: "Lugar Devolución", key: "returnPlace", width: 20 },
+			{ header: "Monto ($)", key: "amount", width: 15 },
+			{ header: "Notas", key: "notes", width: 30 },
+		];
+
+		// Agregamos filas
+		trips.forEach((trip) => {
+			sheet.addRow({
+				id: trip.id.split("-")[0], // ID corto
+				date: new Date(trip.pickupDate || trip.createdAt).toLocaleDateString(),
+				status: trip.status,
+				client: trip.client
+					? `${trip.client.firstName} ${trip.client.lastName}`
+					: "N/A",
+				driver: trip.driver
+					? `${trip.driver.firstName} ${trip.driver.lastName}`
+					: "Sin asignar",
+				semi: trip.semi,
+				origin: trip.origin,
+				destination: trip.destination,
+				container: trip.containerNumber || "No",
+				expiration: trip.expirationDate
+					? new Date(trip.expirationDate).toLocaleDateString()
+					: "-",
+				returnPlace: trip.returnPlace || "-",
+				amount: trip.amount || 0,
+				notes: trip.notes,
+			});
+		});
+
+		// Configurar headers para descarga
+		res.setHeader(
+			"Content-Type",
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		);
+		res.setHeader(
+			"Content-Disposition",
+			"attachment; filename=" + "Reporte_Viajes.xlsx",
+		);
+
+		// Escribir al stream de respuesta
+		await workbook.xlsx.write(res);
+		res.end();
+	} catch (error) {
+		console.error("Error excel:", error);
+		res.status(500).send("Error al generar Excel");
 	}
 };

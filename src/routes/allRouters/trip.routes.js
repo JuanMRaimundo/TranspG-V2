@@ -3,72 +3,42 @@ import passport from "passport";
 import {
 	createTripRequest,
 	assignDriver,
-	driverResponse,
 	getAllTrips,
 	getSortedTrips,
-	finishTrip,
 	getTripById,
 	updateTrip,
 	cancelTrip,
+	acknowledgeTrip,
+	startTrip,
+	unloadTrip,
+	returnContainer,
+	invoiceTrip,
+	exportTripsToExcel,
 } from "../../controllers/trip.controller.js";
 
 const router = Router();
 
-// --- 1. Rutas Estáticas (Primero) ---
+const auth = passport.authenticate("jwt", { session: false });
 
-// GET /api/v1/trips/ -> Obtener todos los viajes (según rol)
-router.get(
-	"/", // Esto equivale a /api/v1/trips porque el router ya está montado ahí
-	passport.authenticate("jwt", { session: false }),
-	getAllTrips,
-);
-router.get(
-	"/",
-	passport.authenticate("jwt", { session: false }),
-	getSortedTrips,
-);
-router.get(
-	"/:tripId",
-	passport.authenticate("jwt", { session: false }),
-	getTripById,
-);
+// 1. Lectura y Exportación (OJO: Poner 'export' ANTES de ':tripId' para evitar conflictos)
+router.get("/export", auth, exportTripsToExcel); // /api/v1/trips/export
+router.get("/", auth, getAllTrips);
+router.get("/", auth, getSortedTrips);
+router.get("/:tripId", auth, getTripById);
 
-// POST /api/v1/trips/request -> Crear solicitud
-router.post(
-	"/request",
-	passport.authenticate("jwt", { session: false }),
-	createTripRequest,
-);
-(router.put(
-	"/:tripId",
-	passport.authenticate("jwt", { session: false }),
-	updateTrip,
-),
-	// --- 2. Rutas Dinámicas (Después) ---
-	// PUT /api/v1/trips/:tripId/assign -> Admin asigna chofer (Propuesta)
-	router.put(
-		"/:tripId/assign",
-		passport.authenticate("jwt", { session: false }),
-		assignDriver,
-	));
+// 2. Creación y Edición
+router.post("/request", auth, createTripRequest);
+router.put("/:tripId", auth, updateTrip); // Edición general (Auditoría)
 
-// POST /api/v1/trips/:tripId/response -> Chofer responde (Acepta/Rechaza)
-router.patch(
-	"/:tripId/responseDriver",
-	passport.authenticate("jwt", { session: false }),
-	driverResponse,
-);
+// 3. Flujo de Estados (Botones específicos)
+router.put("/:tripId/assign", auth, assignDriver); // Admin asigna
+router.put("/:tripId/acknowledge", auth, acknowledgeTrip); // Chofer OK
+router.put("/:tripId/start", auth, startTrip); // Chofer Inicia
+router.put("/:tripId/unload", auth, unloadTrip); // Chofer Descarga
+router.put("/:tripId/return", auth, returnContainer); // Chofer Playo
+router.put("/:tripId/invoice", auth, invoiceTrip); // Admin Factura
 
-// PUT /api/v1/trips/:tripId/status -> Chofer actualiza estado (En curso, Finalizado)
-router.post(
-	"/:tripId/finish",
-	passport.authenticate("jwt", { session: false }),
-	finishTrip,
-);
-router.patch(
-	"/:tripId/cancel",
-	passport.authenticate("jwt", { session: false }),
-	cancelTrip,
-);
+//4.Si se llega a cancelar el viaje
+router.patch("/:tripId/cancel", auth, cancelTrip);
 
 export default router;

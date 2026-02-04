@@ -1,6 +1,5 @@
 import { DataTypes, Model } from "sequelize";
 import sequelize from "../config/database.js";
-import User from "./User.js";
 
 class Trip extends Model {}
 
@@ -17,21 +16,36 @@ Trip.init(
 		cargoDetails: { type: DataTypes.TEXT }, // "Detalle"
 
 		reference: { type: DataTypes.STRING }, // "Ref" (Orden de compra/Remito)
-		containerNumber: { type: DataTypes.STRING }, // "N°_contenedor" (CRÍTICO)
-		expirationDate: { type: DataTypes.DATEONLY }, // "Vencimiento"
+		containerNumber: { type: DataTypes.STRING, allowNull: true }, // "N°_contenedor" (CRÍTICO)
+		expirationDate: { type: DataTypes.DATEONLY, allowNull: true }, // "Vencimiento"
+		returnPlace: {
+			type: DataTypes.STRING,
+			allowNull: true,
+		},
+		semi: {
+			type: DataTypes.STRING,
+			allowNull: false,
+			validate: { notEmpty: true },
+		},
 		notes: { type: DataTypes.TEXT }, // "Observaciones"
 
 		// --- ESTADOS DEL SISTEMA ---
 		status: {
 			type: DataTypes.ENUM(
-				"PENDING", // Creado, sin chofer
-				"WAITING_DRIVER", // Asignado por Admin, esperando OK del chofer
-				"CONFIRMED", // Chofer aceptó (CONFIRMADO)
-				"REJECTED_BY_DRIVER", // Chofer rechazó
-				"IN_PROGRESS",
-				"FINISHED",
+				"PENDING", // Creado
+				"CONFIRMED", // Asignado a Chofer
+				"IN_PROGRESS", // "En camino"
+				"UNLOADED", // "Descargado"
+				"RETURNED", // "Playo" (Contenedor devuelto)
+				"INVOICED", // "Facturado" (Finalizado con monto)
+				"CANCELLED", // Cancelado
 			),
 			defaultValue: "PENDING",
+		},
+		driverAcknowledged: {
+			type: DataTypes.BOOLEAN,
+			defaultValue: false,
+			comment: "Si el chofer dio el OK de enterado",
 		},
 
 		// Foreign Keys
@@ -45,8 +59,5 @@ Trip.init(
 		modelName: "Trip",
 	},
 );
-
-Trip.belongsTo(User, { as: "client", foreignKey: "clientId" });
-Trip.belongsTo(User, { as: "driver", foreignKey: "driverId" });
 
 export default Trip;
