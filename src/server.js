@@ -1,7 +1,7 @@
 import { createServer } from "http";
 import { Server } from "socket.io";
 import app from "./app.js";
-import sequelize from "./config/database.js"; // Tu instancia Sequelize
+import { sequelize } from "./models/index.js"; // Tu instancia Sequelize
 import socketHandler from "./sockets/socketHandler.js"; // Lógica de sockets separada
 
 const httpServer = createServer(app);
@@ -23,9 +23,17 @@ io.on("connection", (socket) => {
 const PORT = process.env.PORT || 3000;
 
 // Sincronizar DB y levantar servidor
-sequelize.sync({ force: process.env.NODE_ENV === "development" }).then(() => {
-	console.log("Base de datos conectada.");
-	httpServer.listen(PORT, () => {
-		console.log(`Servidor corriendo en puerto ${PORT}`);
-	});
-});
+async function main() {
+	try {
+		await sequelize.sync({ force: process.env.NODE_ENV === "development" });
+		console.log("Base de datos sincronizada correctamente.");
+
+		httpServer.listen(PORT, () => {
+			console.log(`Servidor corriendo en puerto ${PORT}`);
+		});
+	} catch (error) {
+		console.error("Error al iniciar servidor:", error);
+	}
+}
+
+main();
