@@ -238,6 +238,10 @@ export const createTripRequest = async (req, res) => {
 					reference: reference,
 				});
 			}
+			io.emit("trips:refresh", {
+				action: "CREATED",
+				tripId: newTrip.tripId,
+			});
 		}
 
 		return res.status(201).json({ success: true, data: newTrip });
@@ -282,6 +286,10 @@ export const updateTrip = async (req, res) => {
 					io.to(`user_${trip.clientId}`).emit("trip_edited", msg);
 				if (trip.driverId)
 					io.to(`user_${trip.driverId}`).emit("trip_edited", msg);
+				io.emit("trips:refresh", {
+					action: "UPDATE",
+					tripId: trip.tripId,
+				});
 			}
 			res.json({
 				success: true,
@@ -348,6 +356,10 @@ export const assignDriver = async (req, res) => {
 				message:
 					"Se te ha asignado un nuevo viaje. Por favor confirma lectura.",
 			});
+			io.emit("trips:refresh", {
+				action: "ASSING",
+				tripId: trip.tripId,
+			});
 		}
 
 		return res.json({
@@ -384,7 +396,10 @@ export const acknowledgeTrip = async (req, res) => {
 			message: `El chofer ${req.user.firstName} ha confirmado la recepción del viaje.`,
 			tripId,
 		});
-
+		io.emit("trips:refresh", {
+			action: "ACKNOWLEDGE",
+			tripId: tripId,
+		});
 		res.json({ success: true, message: "Lectura confirmada" });
 	} catch (error) {
 		res.status(500).json({ error: error.message });
@@ -409,7 +424,12 @@ export const startTrip = async (req, res) => {
 		if (io) {
 			io.to(`user_${trip.clientId}`).emit("trip_status", msg);
 			io.to("role_admin").emit("trip_status_update", msg);
+			io.emit("trips:refresh", {
+				action: "START", // Cambiar según la función (UNLOAD, RETURN, etc)
+				tripId: tripId,
+			});
 		}
+
 		res.json({ success: true, status: "IN_PROGRESS" });
 	} catch (error) {
 		res.status(500).json({ error: error.message });
@@ -433,6 +453,10 @@ export const unloadTrip = async (req, res) => {
 		if (io) {
 			io.to(`user_${trip.clientId}`).emit("trip_status", msg);
 			io.to("role_admin").emit("trip_status_update", msg);
+			io.emit("trips:refresh", {
+				action: "UNLOAD",
+				tripId: tripId,
+			});
 		}
 		res.json({ success: true, status: "UNLOADED" });
 	} catch (error) {
@@ -462,6 +486,10 @@ export const returnContainer = async (req, res) => {
 		if (io) {
 			io.to(`user_${trip.clientId}`).emit("trip_status", msg);
 			io.to("role_admin").emit("trip_status_update", msg);
+			io.emit("trips:refresh", {
+				action: "RETURNED",
+				tripId: tripId,
+			});
 		}
 		res.json({ success: true, status: "RETURNED" });
 	} catch (error) {
@@ -480,6 +508,10 @@ export const invoiceTrip = async (req, res) => {
 			return res.status(403).json({ message: "Solo Admin factura." });
 		if (!amount)
 			return res.status(400).json({ message: "El monto es obligatorio." });
+		if (amount === undefined || amount === null || isNaN(amount)) {
+			return res.status(400).json({ message: "El monto es inválido" });
+		}
+		const finalAmount = parseFloat(amount);
 
 		const trip = await Trip.findByPk(tripId);
 
@@ -498,9 +530,16 @@ export const invoiceTrip = async (req, res) => {
 			// Por ahora lo dejamos pasar, pero guardamos el monto.
 		}
 
-		trip.amount = amount;
-		trip.status = "INVOICED";
-		await trip.save();
+		const [updatedRows] = await Trip.update(
+			{
+				status: "INVOICED",
+				amount: finalAmount,
+			},
+			{ where: { id: tripId } },
+		);
+
+		if (updatedRows === 0)
+			return res.status(404).json({ message: "Viaje no encontrado" });
 
 		if (io) {
 			io.to("role_admin").emit("trip_status", {
@@ -513,8 +552,13 @@ export const invoiceTrip = async (req, res) => {
 				status: "INVOICED",
 				message: `Tu viaje ha sido cerrado y facturado.`,
 				tripId,
-			}); */
+				}); */
+			io.emit("trips:refresh", {
+				action: "INVOICE",
+				tripId: req.params.tripId,
+			});
 		}
+
 		res.json({ success: true, message: "Viaje facturado correctamente." });
 	} catch (error) {
 		res.status(500).json({ error: error.message });
