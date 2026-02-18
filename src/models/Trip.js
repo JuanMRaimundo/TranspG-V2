@@ -42,6 +42,11 @@ Trip.init(
 			),
 			defaultValue: "PENDING",
 		},
+		amount: {
+			type: DataTypes.DECIMAL(10, 2),
+			allowNull: true,
+			defaultValue: 0,
+		},
 		driverAcknowledged: {
 			type: DataTypes.BOOLEAN,
 			defaultValue: false,
